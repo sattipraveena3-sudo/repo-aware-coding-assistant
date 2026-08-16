@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Repo-Aware Coding Assistant</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main>
+    <header><div><p class="eyebrow">LOCAL-FIRST CODE INTELLIGENCE</p><h1>Repo-Aware Coding Assistant</h1><p>Index a repository, inspect symbols and dependency relationships, and ask grounded questions with optional Ollama synthesis.</p></div><span id="health" class="pill">checking…</span></header>
+    <section class="grid">
+      <article class="card"><h2>1. Add repository</h2><label>Local path<input id="localPath" placeholder="/workspace/my-project" /></label><button id="indexLocal">Index local repo</button><div class="divider">or</div><label>Git URL<input id="gitUrl" placeholder="https://github.com/org/repo.git" /></label><button id="cloneRepo" class="secondary">Clone & index</button></article>
+      <article class="card"><h2>2. Choose repository</h2><select id="repoSelect"></select><button id="refreshRepo" class="secondary">Refresh index</button><pre id="repoMeta">No repository selected.</pre></article>
+    </section>
+    <section class="card"><h2>3. Ask the codebase</h2><div class="ask-row"><input id="question" placeholder="Where is authentication handled and what calls it?" /><input id="model" placeholder="Ollama model (optional)" /><button id="ask">Ask</button></div><div id="status"></div><pre id="answer">Your grounded answer will appear here.</pre><div id="refs"></div></section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
