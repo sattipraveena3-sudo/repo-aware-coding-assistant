@@ -1,39 +1,45 @@
+from __future__ import annotations
+
 import argparse
 import json
-from pathlib import Path
 
-from code_assistant.core import answer, index_repo, load_index, save_index
+from .llm import answer_with_optional_ollama
+from .workspace import Workspace
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Repo-aware Python code assistant")
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(prog='repo-assistant', description='Repository-aware code search and local AI assistant')
+    parser.add_argument('--workspace', default='.repo_assistant')
+    sub = parser.add_subparsers(dest='command', required=True)
 
-    index_cmd = sub.add_parser("index", help="Index a Python repository")
-    index_cmd.add_argument("repo_path", nargs="?", default=".")
-    index_cmd.add_argument("--output", default=".code-index.json")
-
-    ask_cmd = sub.add_parser("ask", help="Ask a question about the indexed repository")
-    ask_cmd.add_argument("question")
-    ask_cmd.add_argument("--index", default=".code-index.json")
-    ask_cmd.add_argument("--top-k", type=int, default=6)
+    p_index = sub.add_parser('index', help='Index a local repository')
+    p_index.add_argument('path')
+    p_index.add_argument('--name')
+    p_clone = sub.add_parser('clone', help='Clone and index a remote git repository')
+    p_clone.add_argument('url')
+    p_clone.add_argument('--name')
+    sub.add_parser('list', help='List indexed repositories')
+    p_refresh = sub.add_parser('refresh', help='Refresh an indexed repository')
+    p_refresh.add_argument('repo_id')
+    p_ask = sub.add_parser('ask', help='Ask a repository-grounded question')
+    p_ask.add_argument('repo_id')
+    p_ask.add_argument('question')
+    p_ask.add_argument('--model', default=None)
 
     args = parser.parse_args()
-
-    if args.command == "index":
-        idx = index_repo(Path(args.repo_path))
-        save_index(idx, args.output)
-        print(
-            f'Indexed {idx["files_indexed"]} Python files and {len(idx["chunks"])} symbols '
-            f'to {args.output}'
-        )
-        if idx["files_skipped"]:
-            print(f'Skipped {len(idx["files_skipped"])} files: {", ".join(idx["files_skipped"])}')
-        return
-
-    result = answer(load_index(args.index), args.question, k=args.top_k)
+    workspace = Workspace(args.workspace)
+    if args.command == 'index':
+        result = workspace.index_local(args.path, args.name)
+    elif args.command == 'clone':
+        result = workspace.clone_and_index(args.url, args.name)
+    elif args.command == 'list':
+        result = workspace.list()
+    elif args.command == 'refresh':
+        result = workspace.refresh(args.repo_id)
+    else:
+        result = answer_with_optional_ollama(workspace.load_repo_index(args.repo_id), args.question, model=args.model)
     print(json.dumps(result, indent=2))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
