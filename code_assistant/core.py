@@ -1,46 +1,217 @@
-import ast, json, math, re
-from collections import Counter,defaultdict
-from dataclasses import asdict,dataclass
+import ast
+import json
+import math
+import re
+from collections import Counter, defaultdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Iterable
+
+IGNORED_DIRS = {".git", ".venv", "venv", "__pycache__", "node_modules", "dist", "build"}
+
 
 @dataclass
 class Chunk:
-    id:str; path:str; symbol:str; kind:str; start:int; end:int; code:str; calls:list[str]
+    id: str
+    path: str
+    symbol: str
+    kind: str
+    start: int
+    end: int
+    code: str
+    calls: list[str]
+    docstring: str = ""
 
-def chunk_file(path:Path,root:Path)->list[Chunk]:
-    text=path.read_text(encoding="utf-8"); tree=ast.parse(text); lines=text.splitlines(); result=[]
+
+def _is_ignored(path: Path) -> bool:
+    return any(part in IGNORED_DIRS or part.startswith(".") for part in path.parts)
+
+
+def _call_name(node: ast.Call) -> str | None:
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def chunk_file(path: Path, root: Path) -> list[Chunk]:
+    text = path.read_text(encoding="utf-8")
+    tree = ast.parse(text)
+    lines = text.splitlines()
+    result: list[Chunk] = []
+    rel = str(path.relative_to(root))
+
     for node in ast.walk(tree):
-        if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)):
-            calls=sorted({n.func.id if isinstance(n.func,ast.Name) else n.func.attr for n in ast.walk(node) if isinstance(n,ast.Call) and isinstance(n.func,(ast.Name,ast.Attribute))})
-            rel=str(path.relative_to(root)); result.append(Chunk(f"{rel}:{node.lineno}:{node.name}",rel,node.name,type(node).__name__,node.lineno,node.end_lineno,"\n".join(lines[node.lineno-1:node.end_lineno]),calls))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            end = getattr(node, "end_lineno", node.lineno)
+            calls = sorted(
+                {
+                    name
+                    for call in ast.walk(node)
+                    if isinstance(call, ast.Call)
+                    for name in [_call_name(call)]
+                    if name
+                }
+            )
+            result.append(
+                Chunk(
+                    id=f"{rel}:{node.lineno}:{node.name}",
+                    path=rel,
+                    symbol=node.name,
+                    kind=type(node).__name__,
+                    start=node.lineno,
+                    end=end,
+                    code="\n".join(lines[node.lineno - 1 : end]),
+                    calls=calls,
+                    docstring=ast.get_docstring(node) or "",
+                )
+            )
     return result
 
-def index_repo(root:Path)->dict:
-    chunks=[]
+
+def _python_files(root: Path) -> Iterable[Path]:
     for path in root.rglob("*.py"):
-        if not any(part.startswith(".") or part in {"venv","__pycache__"} for part in path.parts):
-            try: chunks.extend(chunk_file(path,root))
-            except (SyntaxError,UnicodeDecodeError): pass
-    symbols=defaultdict(list)
-    for c in chunks: symbols[c.symbol].append(c.id)
-    edges={c.id:sorted({target for call in c.calls for target in symbols.get(call,[])}) for c in chunks}
-    return {"root":str(root.resolve()),"chunks":[asdict(c) for c in chunks],"edges":edges}
+        rel = path.relative_to(root)
+        if not _is_ignored(rel):
+            yield path
 
-def tokens(text): return re.findall(r"[a-zA-Z_][a-zA-Z0-9_]+",text.lower())
-def retrieve(index:dict,question:str,k=6)->list[dict]:
-    docs=index["chunks"]; query=Counter(tokens(question)); df=Counter(t for d in docs for t in set(tokens(d["symbol"]+" "+d["code"])))
-    scores=[]
-    for d in docs:
-        tf=Counter(tokens(d["symbol"]+" "+d["code"])); score=sum(query[t]*tf[t]*math.log((len(docs)+1)/(df[t]+1)+1) for t in query)
-        if d["symbol"].lower() in question.lower(): score+=5
-        scores.append((score,d))
-    ranked=[d for s,d in sorted(scores,key=lambda x:x[0],reverse=True) if s>0][:k]; ids={d["id"] for d in ranked}
-    related={x for i in list(ids) for x in index["edges"].get(i,[])}
-    return ranked+[d for d in docs if d["id"] in related and d["id"] not in ids][:2]
 
-def answer(index,question):
-    hits=retrieve(index,question); refs=[f'{h["path"]}:{h["start"]}-{h["end"]} ({h["symbol"]})' for h in hits]
-    return {"answer":"Relevant symbols are listed below. Inspect their dependency-linked implementations before changing behavior.","references":refs,"context":hits,"suggested_diff":"--- a/path.py\n+++ b/path.py\n@@\n-# existing behavior\n+# proposed change after reviewing retrieved context"}
+def index_repo(root: Path) -> dict:
+    root = root.expanduser().resolve()
+    if not root.exists() or not root.is_dir():
+        raise ValueError(f"Repository path does not exist or is not a directory: {root}")
 
-def save_index(index,path): Path(path).write_text(json.dumps(index),encoding="utf-8")
-def load_index(path): return json.loads(Path(path).read_text(encoding="utf-8"))
+    chunks: list[Chunk] = []
+    skipped: list[str] = []
+    files = list(_python_files(root))
+    for path in files:
+        try:
+            chunks.extend(chunk_file(path, root))
+        except (SyntaxError, UnicodeDecodeError, OSError):
+            skipped.append(str(path.relative_to(root)))
+
+    symbols: dict[str, list[str]] = defaultdict(list)
+    by_id = {c.id: c for c in chunks}
+    for chunk in chunks:
+        symbols[chunk.symbol].append(chunk.id)
+
+    edges: dict[str, list[str]] = {}
+    reverse_edges: dict[str, list[str]] = defaultdict(list)
+    for chunk in chunks:
+        targets = sorted({target for call in chunk.calls for target in symbols.get(call, [])})
+        edges[chunk.id] = targets
+        for target in targets:
+            reverse_edges[target].append(chunk.id)
+
+    return {
+        "version": 2,
+        "root": str(root),
+        "files_indexed": len(files) - len(skipped),
+        "files_skipped": skipped,
+        "chunks": [asdict(c) for c in chunks],
+        "edges": edges,
+        "reverse_edges": {k: sorted(v) for k, v in reverse_edges.items()},
+        "symbols": {k: sorted(v) for k, v in symbols.items()},
+    }
+
+
+def tokens(text: str) -> list[str]:
+    return re.findall(r"[a-zA-Z_][a-zA-Z0-9_]+", text.lower())
+
+
+def retrieve(index: dict, question: str, k: int = 6) -> list[dict]:
+    docs = index.get("chunks", [])
+    if not docs:
+        return []
+
+    query = Counter(tokens(question))
+    df = Counter(t for d in docs for t in set(tokens(f'{d["symbol"]} {d.get("docstring", "")} {d["code"]}')))
+    scores: list[tuple[float, dict]] = []
+    q_lower = question.lower()
+
+    for doc in docs:
+        haystack = f'{doc["symbol"]} {doc.get("docstring", "")} {doc["code"]}'
+        tf = Counter(tokens(haystack))
+        score = sum(
+            query[t] * tf[t] * math.log((len(docs) + 1) / (df[t] + 1) + 1)
+            for t in query
+        )
+        if doc["symbol"].lower() in q_lower:
+            score += 6
+        if doc["path"].lower() in q_lower:
+            score += 3
+        scores.append((score, doc))
+
+    ranked = [doc for score, doc in sorted(scores, key=lambda item: item[0], reverse=True) if score > 0][:k]
+    ids = {doc["id"] for doc in ranked}
+    related = {
+        related_id
+        for chunk_id in list(ids)
+        for related_id in index.get("edges", {}).get(chunk_id, []) + index.get("reverse_edges", {}).get(chunk_id, [])
+    }
+    return ranked + [doc for doc in docs if doc["id"] in related and doc["id"] not in ids][:3]
+
+
+def _reference(hit: dict) -> str:
+    return f'{hit["path"]}:{hit["start"]}-{hit["end"]} ({hit["symbol"]})'
+
+
+def _relationship_summary(index: dict, hit: dict) -> list[str]:
+    by_id = {c["id"]: c for c in index.get("chunks", [])}
+    outgoing = [by_id[x]["symbol"] for x in index.get("edges", {}).get(hit["id"], []) if x in by_id]
+    incoming = [by_id[x]["symbol"] for x in index.get("reverse_edges", {}).get(hit["id"], []) if x in by_id]
+    details: list[str] = []
+    if outgoing:
+        details.append(f"calls {', '.join(outgoing[:5])}")
+    if incoming:
+        details.append(f"called by {', '.join(incoming[:5])}")
+    return details
+
+
+def answer(index: dict, question: str, k: int = 6) -> dict:
+    question = question.strip()
+    if not question:
+        raise ValueError("Question cannot be empty")
+
+    hits = retrieve(index, question, k=k)
+    if not hits:
+        return {
+            "answer": "I could not find a matching Python symbol in the current repository index.",
+            "references": [],
+            "context": [],
+            "suggested_diff": None,
+        }
+
+    lines = [f"I found {len(hits)} relevant code locations for: {question}"]
+    for hit in hits[:5]:
+        relationship = _relationship_summary(index, hit)
+        suffix = f" — {'; '.join(relationship)}" if relationship else ""
+        lines.append(f"- {_reference(hit)}{suffix}")
+
+    primary = hits[0]
+    symbol = primary["symbol"]
+    suggestion = (
+        f"Start with `{symbol}` in `{primary['path']}` and inspect the linked callers/callees before editing. "
+        "The index can identify the relevant code, but it intentionally does not fabricate a patch without a concrete requested change."
+    )
+    lines.append(suggestion)
+
+    return {
+        "answer": "\n".join(lines),
+        "references": [_reference(hit) for hit in hits],
+        "context": hits,
+        "suggested_diff": None,
+    }
+
+
+def save_index(index: dict, path: str | Path) -> None:
+    Path(path).write_text(json.dumps(index, indent=2), encoding="utf-8")
+
+
+def load_index(path: str | Path) -> dict:
+    index_path = Path(path)
+    if not index_path.exists():
+        raise FileNotFoundError(f"Index file not found: {index_path}. Run the index command first.")
+    return json.loads(index_path.read_text(encoding="utf-8"))
