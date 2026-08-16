@@ -1,28 +1,134 @@
 # Repo-Aware Coding Assistant
 
-I built this self-hosted code-intelligence tool to retrieve program structure rather than arbitrary text windows. Python's AST defines function, method, and class chunks; a call graph links callees; lexical retrieval and graph expansion return grounded file and line references. The CLI is primary, with a small FastAPI wrapper.
+A complete, local-first coding assistant that understands **repository structure instead of arbitrary text chunks**. It indexes Python functions/classes with the AST, builds caller/callee relationships, retrieves grounded code context, and can optionally send only retrieved context to a self-hosted Ollama model for natural-language synthesis.
+
+## Included
+
+- **Repository ingestion** — index local folders or clone Git repositories available to the runtime.
+- **AST-aware indexing** — functions, async functions, classes, methods, qualified names, docstrings, source ranges, and call relationships.
+- **Graph-aware retrieval** — lexical relevance plus linked callers/callees.
+- **Grounded answers** — deterministic offline mode always works; Ollama mode adds natural-language synthesis and automatically falls back if unavailable.
+- **Web application** — responsive UI for adding repositories, refreshing indexes, asking questions, and viewing references.
+- **FastAPI backend** — health, repository management, refresh, and ask endpoints with generated OpenAPI docs.
+- **CLI** — index, clone, list, refresh, and ask commands.
+- **Persistent workspace** — repository metadata and indexes survive restarts.
+- **Docker + Compose** — application and Ollama services with persistent volumes.
+- **Automated tests + GitHub Actions CI** — core, workspace, and end-to-end API coverage.
+
+## Architecture
+
+```text
+Browser UI
+   │
+   ▼
+FastAPI API ─────────────── CLI
+   │                        │
+   └──────── Workspace ─────┘
+              │
+      ┌───────┴────────┐
+      ▼                ▼
+ Repository files   JSON indexes
+      │
+      ▼
+ Python AST indexer
+      │
+      ├─ symbol chunks
+      ├─ source ranges
+      ├─ call graph
+      └─ reverse caller graph
+              │
+              ▼
+      graph-aware retriever
+              │
+       ┌──────┴──────┐
+       ▼             ▼
+ deterministic     Ollama
+ grounded answer   synthesis
+```
+
+## Fastest local start
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\\Scripts\\activate
 pip install -r requirements.txt
-python -m code_assistant.cli index .
-python -m code_assistant.cli ask "where is retrieve used?"
-pytest
+pytest -q
+uvicorn app:app --reload
 ```
 
-Example self-indexing output includes `code_assistant/core.py` symbols such as `index_repo`, `retrieve`, and their call-linked dependencies. Suggested changes are emitted in unified-diff form. The deterministic answer layer works offline; Docker Compose includes Ollama so a local `qwen2.5-coder` synthesis layer can be connected without changing retrieval.
+Open `http://localhost:8000`. API docs are at `http://localhost:8000/docs`.
 
-This differs from naive RAG by respecting AST boundaries, recording symbol calls, and expanding retrieved nodes through code dependencies. Current limitations are Python-only parsing, simple name resolution, lexical rather than learned embeddings, and no automatic patch application. Next steps are tree-sitter languages, local dense embeddings, repository-aware reranking, Ollama synthesis, git-aware diffs, and sandboxed tests.
-
-Suggested commits: `set up CLI`, `add AST chunker`, `build call graph`, `add hybrid retriever`, `add grounded references`, `format diff suggestions`, `add FastAPI wrapper`, `add self-indexing demo`, `add tests`, `add Ollama Compose`, `write README`.
+Index this project from the UI using the project directory, or via CLI:
 
 ```bash
-git init -b main
-git add code_assistant && git commit -m "add AST-aware indexing and retrieval"
-git add app.py tests && git commit -m "add API and retrieval tests"
-git add Dockerfile docker-compose.yml && git commit -m "add self-hosted runtime"
-git add README.md && git commit -m "document self-indexing workflow"
-gh repo create repo-aware-coding-assistant --public --source=. --remote=origin
-git push -u origin main
+python -m code_assistant.cli index .
+python -m code_assistant.cli list
 ```
 
-MIT licensed. The tool never sends repository code to a paid service by default.
+The `index` command returns a repository id. Use it to ask:
+
+```bash
+python -m code_assistant.cli ask <repo-id> "Where is repository refresh implemented and what does it call?"
+```
+
+## Optional local LLM with Ollama
+
+The assistant works without any model. For richer synthesis:
+
+```bash
+ollama pull qwen2.5-coder:3b
+export OLLAMA_MODEL=qwen2.5-coder:3b
+uvicorn app:app --reload
+```
+
+Only retrieved repository context is sent to Ollama. If Ollama cannot be reached, the app falls back to deterministic graph-aware retrieval automatically.
+
+## Docker Compose
+
+```bash
+docker compose up --build -d
+docker compose exec ollama ollama pull qwen2.5-coder:3b
+```
+
+Then open `http://localhost:8000`. The compose stack mounts this repository read-only at `/workspace/example`, so you can index `/workspace/example` immediately from the UI.
+
+## API examples
+
+```bash
+curl -X POST http://localhost:8000/api/repositories/local \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"/workspace/example"}'
+
+curl -X POST http://localhost:8000/api/repositories/<repo-id>/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"Where is indexing implemented?"}'
+```
+
+Clone a remote repository:
+
+```bash
+curl -X POST http://localhost:8000/api/repositories/clone \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://github.com/OWNER/REPO.git"}'
+```
+
+## Production notes
+
+This project is intended to be self-hosted. For internet-facing deployment, place it behind authentication and a reverse proxy because indexing local paths and cloning repositories are privileged operations by design. Keep the workspace on a persistent volume. For private Git repositories, configure Git credentials/SSH in the runtime rather than embedding credentials in URLs.
+
+## Current scope
+
+The semantic parser is intentionally Python-first. The architecture isolates indexing and retrieval so tree-sitter parsers or language-specific indexers can be added later without replacing the API, UI, workspace, or synthesis layers.
+
+## Quality checks
+
+```bash
+pytest -q
+python -m code_assistant.cli --workspace .tmp-assistant index tests/fixture
+```
+
+GitHub Actions runs these checks on every pull request and on pushes to `main`.
+
+## License
+
+MIT.

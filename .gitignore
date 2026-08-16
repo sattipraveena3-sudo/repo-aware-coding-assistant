@@ -1,4 +1,9 @@
 __pycache__/
-.pytest_cache/
+*.py[cod]
 .venv/
-.code-index.json
+venv/
+.pytest_cache/
+.repo_assistant/
+.tmp-assistant/
+.env
+.DS_Store
