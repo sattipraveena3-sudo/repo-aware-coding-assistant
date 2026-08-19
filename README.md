@@ -51,9 +51,9 @@ FastAPI API ─────────────── CLI
 ```bash
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\\Scripts\\activate
-pip install -r requirements.txt
+pip install -e ".[dev]"
 pytest -q
-uvicorn app:app --reload
+uvicorn code_assistant.api:app --reload
 ```
 
 Open `http://localhost:8000`. API docs are at `http://localhost:8000/docs`.
@@ -78,7 +78,7 @@ The assistant works without any model. For richer synthesis:
 ```bash
 ollama pull qwen2.5-coder:3b
 export OLLAMA_MODEL=qwen2.5-coder:3b
-uvicorn app:app --reload
+uvicorn code_assistant.api:app --reload
 ```
 
 Only retrieved repository context is sent to Ollama. If Ollama cannot be reached, the app falls back to deterministic graph-aware retrieval automatically.
@@ -123,11 +123,15 @@ The semantic parser is intentionally Python-first. The architecture isolates ind
 ## Quality checks
 
 ```bash
+ruff check app.py code_assistant tests
+ruff format --check app.py code_assistant tests
 pytest -q
 python -m code_assistant.cli --workspace .tmp-assistant index tests/fixture
+python -m pip wheel --no-deps --wheel-dir dist .
 ```
 
-GitHub Actions runs these checks on every pull request and on pushes to `main`.
+GitHub Actions runs these checks on Python 3.11 and 3.12, builds an installable wheel,
+and verifies the production Docker image on every pull request and push to `main`.
 
 ## License
 

@@ -1,12 +1,12 @@
 .PHONY: install test run docker-up smoke
 install:
-	python -m pip install -r requirements.txt
+	python -m pip install -e ".[dev]"
 
 test:
 	pytest -q
 
 run:
-	uvicorn app:app --reload
+	uvicorn code_assistant.api:app --reload
 
 docker-up:
 	docker compose up --build
